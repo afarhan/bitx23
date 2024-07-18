@@ -1,3 +1,13 @@
+/*
+The first time,
+press bootsel while plugging in the pico
+when the drive shows, copy paste the uf2 compiled by Arduin0
+
+from next time, it will program through the com port
+unless the program is crashing, then you have to do the
+bootsel all over again
+*/
+
 #include <Wire.h>
 
 // Pin Definitions
