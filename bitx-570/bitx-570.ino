@@ -1,422 +1,328 @@
-/*
-The first time,
-press bootsel while plugging in the pico
-when the drive shows, copy paste the uf2 compiled by Arduin0
+#include <Wire.h>
 
-from next time, it will program through the com port
-unless the program is crashing, then you have to do the
-bootsel all over again
-*/
-
-#include "Wire.h"
-
-// Existing pin definitions
+// Pin Definitions
 #define ENC_A (8)
 #define ENC_B (7)
-#define ENC_SWITCH (6) // switch vfo.
+#define ENC_SWITCH (6)
+#define BUTTON_PIN (9) // Button for switching VFO A/B
+#define ENC_RIT_A (10) // RIT encoder A pin
+#define ENC_RIT_B (11) // RIT encoder B pin
+#define RIT_BUTTON_PIN (12) // RIT enable/disable button
+#define STEP_BUTTON_PIN (13) // Button for changing frequency step
+#define ENC_MEM_A (2) // Encoder A pin for memory selection
+#define ENC_MEM_B (3) // Encoder B pin for memory selection
+#define MEM_BUTTON_PIN (4) // Button to save/recall memory
 
-// Switch VFO A/B 
-#define VFO_SWITCH (2)
+#define SPEAKER_PIN (5) // Pin for speaker output
+#define MIC_PIN (6) // Pin for microphone input
+#define SQUELCH_PIN (14) // Pin for squelch control
 
-#define S_METER_PIN (9)
-#define CW_PIN (10)
-#define SPLIT_SWITCH (11)
-#define PTT_PIN (12)
+// Mode Definitions
+#define MODE_USB 0
+#define MODE_LSB 1
 
-// Mem Function Encoder
-#define MEM_SAVE (3)
-#define MEM_SELECT (4)
-#define MEM_SCAN (5)
+// Constants
+#define MEMORY_SLOTS 20
+#define SQUELCH_THRESHOLD 100 // Adjust this value as needed
 
-// RIT Function  Encoder
-#define RIT_ENC_A (15) //+ rit
-#define RIT_ENC_B (14) //- rit
-#define RIT_ENC_SWITCH (13) // short push RIT reset long push enable/disable
-
-// New pin definitions for microphone and speaker
-#define MIC_PIN (A0) // Microphone input pin
-#define SPEAKER_PIN (5) // Speaker output pin (PWM)
-#define SQUELCH_THRESHOLD_PIN (A1) // Analog pin for squelch threshold adjustment
-
-#define VFO_A_DEFAULT_FREQ 144200000
-#define VFO_B_DEFAULT_FREQ 144100000
-#define BAND_LIMIT_LOW 144000000
-#define BAND_LIMIT_HIGH 144310000
-
-int32_t ticks = 0;
 const int32_t if_frequency = 26994100;
-int32_t current_frequency = VFO_A_DEFAULT_FREQ;
-int32_t vfo_a_frequency = VFO_A_DEFAULT_FREQ;
-int32_t vfo_b_frequency = VFO_B_DEFAULT_FREQ;
+const int32_t BAND_LIMIT_LOW = 144000000;
+const int32_t BAND_LIMIT_HIGH = 144310000;
 
-bool split_enabled = false; // Split frequency mode state
-bool ptt_active = false; // PTT active state
-bool rit_enabled = false; // RIT enabled state
-int32_t rit_offset = 0; // RIT offset
+// Frequency Variables
+int32_t current_frequency_A = 144200000; // VFO A frequency in Hz
+int32_t current_frequency_B = 144250000; // VFO B frequency in Hz
+int32_t* current_frequency = &current_frequency_A; // Pointer to current VFO
+int8_t current_mode = MODE_USB;
+bool vfo_a_active = true; // Track active VFO
 
-int squelch_threshold = 512; // Default squelch threshold
+// Memory Variables
+int32_t memories[MEMORY_SLOTS];
+int current_memory_index = 0; // Index to track the current memory selection
 
-enum Mode { USB, LSB, CWU, CWL };
-Mode current_mode = USB;
-
-enum VFO { VFO_A, VFO_B };
-VFO current_vfo = VFO_A;
-
-int32_t memories[10] = {0};
-int memory_index = 0;
-
+// Encoder Movement Variables
 int enc_movement = 0;
-int32_t debounce_until = 0;
+int mem_enc_movement = 0;
+bool rit_enabled = false;
+float rit_offset = 0.0;
+int rit_enc_movement = 0;
 
-// Step sizes and index
-const int32_t step_sizes[] = {1, 10, 100, 1000, 10000};
-int current_step_index = 2; // Default step size is 100 Hz
+const int32_t frequency_steps[] = {1000, 10000, 100000, 1000000, 10000000}; // Frequency steps in Hz
+int current_step_index = 0; // Index to track current frequency step
 
-uint8_t enc_state() {
-    return digitalRead(ENC_A) + (2 * digitalRead(ENC_B));
+// Function Prototypes
+uint8_t enc_state(void);
+uint8_t rit_enc_state(void);
+uint8_t mem_enc_state(void);
+void encoder_isr();
+void rit_encoder_isr();
+void mem_encoder_isr();
+void radio_tune(int32_t frequency);
+int32_t do_tuning();
+void switch_vfo();
+void toggle_rit();
+void change_step();
+void memory_button_isr();
+void save_memory();
+void recall_memory();
+void update_rit();
+void display_init();
+void si570_init();
+void print_line1(const char* line);
+void si570_tune(int32_t lo);
+void setup_audio();
+void handle_audio();
+void handle_squelch();
+int read_squelch();
+
+// Implement the squelch control functions
+int read_squelch() {
+    return analogRead(SQUELCH_PIN);
+}
+
+void handle_squelch() {
+    int squelch_level = read_squelch();
+    if (squelch_level > SQUELCH_THRESHOLD) {
+        // Mute the audio output if squelch level is above the threshold
+        analogWrite(SPEAKER_PIN, 0);
+    } else {
+        // Pass through the audio signal if squelch level is below the threshold
+        int audio_signal = analogRead(MIC_PIN);
+        analogWrite(SPEAKER_PIN, audio_signal);
+    }
+}
+
+uint8_t enc_state(void) {
+    uint8_t state = digitalRead(ENC_A) | (digitalRead(ENC_B) << 1);
+    return state;
+}
+
+uint8_t rit_enc_state(void) {
+    uint8_t state = digitalRead(ENC_RIT_A) | (digitalRead(ENC_RIT_B) << 1);
+    return state;
+}
+
+uint8_t mem_enc_state(void) {
+    uint8_t state = digitalRead(ENC_MEM_A) | (digitalRead(ENC_MEM_B) << 1);
+    return state;
 }
 
 void encoder_isr() {
-    static uint8_t saved_enc = 0;
-    static unsigned long last_interrupt_time = 0;
-    unsigned long interrupt_time = millis();
-    
-    if (interrupt_time - last_interrupt_time > 5) { // 5ms debounce time
-        uint8_t enc_now, enc_prev;
+    static uint8_t prev_enc_state = 0;
+    uint8_t enc_state_now = enc_state();
+    if (enc_state_now == prev_enc_state) return;
 
-        enc_now = enc_state();
-        if (enc_now == saved_enc) return;
-
-        enc_prev = saved_enc;
-        saved_enc = enc_now;
-
-        if ((enc_prev == 2 && enc_now == 3) || (enc_prev == 3 && enc_now == 1) || (enc_prev == 1 && enc_now == 0) || (enc_prev == 0 && enc_now == 2))
-            enc_movement++;
-        if ((enc_prev == 3 && enc_now == 2) || (enc_prev == 2 && enc_now == 0) || (enc_prev == 0 && enc_now == 1) || (enc_prev == 1 && enc_now == 3))
-            enc_movement--;
-
-        if (rit_enabled) {
-            if (enc_movement > 0) {
-                increase_rit();
-            } else {
-                decrease_rit();
-            }
-            enc_movement = 0;
-        }
+    if ((prev_enc_state == 2 && enc_state_now == 3) ||
+        (prev_enc_state == 3 && enc_state_now == 1) ||
+        (prev_enc_state == 1 && enc_state_now == 0) ||
+        (prev_enc_state == 0 && enc_state_now == 2)) {
+        enc_movement++;
+    } else {
+        enc_movement--;
     }
-    last_interrupt_time = interrupt_time;
+    prev_enc_state = enc_state_now;
+}
+
+void rit_encoder_isr() {
+    static uint8_t prev_rit_enc_state = 0;
+    uint8_t rit_enc_state_now = rit_enc_state();
+    if (rit_enc_state_now == prev_rit_enc_state) return;
+
+    if ((prev_rit_enc_state == 2 && rit_enc_state_now == 3) ||
+        (prev_rit_enc_state == 3 && rit_enc_state_now == 1) ||
+        (prev_rit_enc_state == 1 && rit_enc_state_now == 0) ||
+        (prev_rit_enc_state == 0 && rit_enc_state_now == 2)) {
+        rit_enc_movement++;
+    } else {
+        rit_enc_movement--;
+    }
+    prev_rit_enc_state = rit_enc_state_now;
+}
+
+void mem_encoder_isr() {
+    static uint8_t prev_mem_enc_state = 0;
+    uint8_t mem_enc_state_now = mem_enc_state();
+    if (mem_enc_state_now == prev_mem_enc_state) return;
+
+    if ((prev_mem_enc_state == 2 && mem_enc_state_now == 3) ||
+        (prev_mem_enc_state == 3 && mem_enc_state_now == 1) ||
+        (prev_mem_enc_state == 1 && mem_enc_state_now == 0) ||
+        (prev_mem_enc_state == 0 && mem_enc_state_now == 2)) {
+        mem_enc_movement++;
+    } else {
+        mem_enc_movement--;
+    }
+    prev_mem_enc_state = mem_enc_state_now;
 }
 
 void radio_tune(int32_t frequency) {
     int32_t lo;
-    int32_t rx_frequency = frequency + (rit_enabled ? rit_offset : 0); // Adjust for RIT
-    if (current_mode == LSB || current_mode == CWL) {
-        lo = (rx_frequency < if_frequency) ? if_frequency - rx_frequency : rx_frequency - if_frequency;
+    if (current_mode == MODE_LSB) {
+        lo = frequency < if_frequency ? if_frequency - frequency : frequency - if_frequency;
     } else {
-        lo = rx_frequency + if_frequency;
+        lo = frequency + if_frequency;
     }
-    si570_tune(lo);
+    si570_tune(lo); // Assuming si570_tune is defined elsewhere
 }
 
 int32_t do_tuning() {
-    if (!enc_movement) return 0;
-    current_frequency += step_sizes[current_step_index] * enc_movement;
+    if (enc_movement == 0) return 0;
+    *current_frequency += frequency_steps[current_step_index] * enc_movement;
     enc_movement = 0;
-    radio_tune(current_frequency);
-    return current_frequency;
+
+    // Ensure the frequency stays within the 2M band limits
+    if (*current_frequency < BAND_LIMIT_LOW) {
+        *current_frequency = BAND_LIMIT_LOW;
+    } else if (*current_frequency > BAND_LIMIT_HIGH) {
+        *current_frequency = BAND_LIMIT_HIGH;
+    }
+
+    radio_tune(*current_frequency);
+    return *current_frequency;
 }
 
-void display_frequency(int32_t frequency) {
+void update_rit() {
+    if (!rit_enabled) return;
+
+    if (rit_enc_movement != 0) {
+        rit_offset += 0.1 * rit_enc_movement;
+        rit_enc_movement = 0;
+
+        // Limit RIT offset between -9.9 and +9.9 kHz
+        if (rit_offset < -9.9) rit_offset = -9.9;
+        if (rit_offset > 9.9) rit_offset = 9.9;
+    }
+}
+
+void switch_vfo() {
+    if (vfo_a_active) {
+        current_frequency = &current_frequency_B;
+        vfo_a_active = false;
+    } else {
+        current_frequency = &current_frequency_A;
+        vfo_a_active = true;
+    }
+    radio_tune(*current_frequency);
     char buff[100];
-    sprintf(buff, "%d", frequency);
+    sprintf(buff, "VFO %c: %d", vfo_a_active ? 'A' : 'B', *current_frequency);
+    print_line1(buff); // Assuming print_line1 is defined elsewhere
+}
+
+void toggle_rit() {
+    rit_enabled = !rit_enabled;
+    if (!rit_enabled) {
+        rit_offset = 0.0; // Reset RIT offset when disabled
+    }
+}
+
+void change_step() {
+    current_step_index = (current_step_index + 1) % 5;
+    char buff[50];
+    sprintf(buff, "Step: %d Hz", frequency_steps[current_step_index]);
     print_line1(buff);
 }
 
-void display_mode() {
-    switch (current_mode) {
-        case USB:
-            print_line2("USB");
-            break;
-        case LSB:
-            print_line2("LSB");
-            break;
-        case CWU:
-            print_line2("CWU");
-            break;
-        case CWL:
-            print_line2("CWL");
-            break;
-    }
+void save_memory() {
+    if (current_memory_index < 0 || current_memory_index >= MEMORY_SLOTS) return;
+    memories[current_memory_index] = *current_frequency;
+    char buff[50];
+    sprintf(buff, "Memory %d Saved: %d", current_memory_index, *current_frequency);
+    print_line1(buff);
 }
 
-void display_s_meter() {
-    int s_meter_value = analogRead(S_METER_PIN);
-    char buff[100];
-    sprintf(buff, "S-meter: %d", s_meter_value);
-    print_line3(buff);
+void recall_memory() {
+    if (current_memory_index < 0 || current_memory_index >= MEMORY_SLOTS) return;
+    *current_frequency = memories[current_memory_index];
+    radio_tune(*current_frequency);
+    char buff[50];
+    sprintf(buff, "Memory %d Recalled: %d", current_memory_index, *current_frequency);
+    print_line1(buff);
 }
 
-void display_vfo_frequencies() {
-    if (split_enabled) {
-        char buff[100];
-        sprintf(buff, "RX: %d TX: %d", vfo_a_frequency, vfo_b_frequency);
-        print_line4(buff);
+void memory_button_isr() {
+    static bool save_mode = true;
+    if (save_mode) {
+        save_memory();
     } else {
-        display_frequency(current_frequency);
+        recall_memory();
     }
+    save_mode = !save_mode; // Toggle between save and recall modes
 }
 
-void display_rit_status() {
-    if (rit_enabled) {
-        char buff[100];
-        sprintf(buff, "RIT: %+d", rit_offset); // Show RIT offset with sign
-        print_line5(buff);
-    } else {
-        print_line5("RIT Off");
-    }
+// Audio setup function
+void setup_audio() {
+    pinMode(SPEAKER_PIN, OUTPUT);
+    pinMode(MIC_PIN, INPUT);
+    pinMode(SQUELCH_PIN, INPUT); // Initialize squelch pin
 }
 
-void display_ptt_status() {
-    if (ptt_active) {
-        print_line6("PTT Active");
-    } else {
-        print_line6("PTT Inactive");
-    }
-}
-
-void display_squelch_status() {
-    char buff[100];
-    sprintf(buff, "Squelch: %d", squelch_threshold); // Show squelch threshold
-    print_line7(buff); // Adjust to the appropriate display line
-}
-
-void handle_vfo_switch() {
-    static unsigned long last_press_time = 0;
-    unsigned long press_time = millis();
-    
-    if (digitalRead(VFO_SWITCH) == LOW && press_time - last_press_time > 200) { // 200ms debounce time
-        if (current_vfo == VFO_A) {
-            vfo_a_frequency = current_frequency;
-            current_frequency = vfo_b_frequency;
-            current_vfo = VFO_B;
-        } else {
-            vfo_b_frequency = current_frequency;
-            current_frequency = vfo_a_frequency;
-            current_vfo = VFO_A;
-        }
-        radio_tune(current_frequency);
-        last_press_time = press_time;
-    }
-}
-
-void handle_memory_save() {
-    static unsigned long last_press_time = 0;
-    unsigned long press_time = millis();
-    
-    if (digitalRead(MEM_SAVE) == LOW && press_time - last_press_time > 200) { // 200ms debounce time
-        memories[memory_index] = current_frequency;
-        last_press_time = press_time;
-    }
-}
-
-void handle_memory_select() {
-    static unsigned long last_press_time = 0;
-    unsigned long press_time = millis();
-    
-    if (digitalRead(MEM_SELECT) == LOW && press_time - last_press_time > 200) { // 200ms debounce time
-        current_frequency = memories[memory_index];
-        radio_tune(current_frequency);
-        last_press_time = press_time;
-    }
-}
-
-void handle_memory_scan() {
-    static unsigned long last_press_time = 0;
-    unsigned long press_time = millis();
-    
-    if (digitalRead(MEM_SCAN) == LOW && press_time - last_press_time > 200) { // 200ms debounce time
-        for (int i = 0; i < 10; i++) {
-            if (memories[i] != 0) {
-                current_frequency = memories[i];
-                radio_tune(current_frequency);
-                delay(1000);
-            }
-        }
-        last_press_time = press_time;
-    }
-}
-
-void handle_mode_switch() {
-    static unsigned long last_press_time = 0;
-    unsigned long press_time = millis();
-    
-    if (digitalRead(CW_PIN) == LOW && press_time - last_press_time > 200) { // 200ms debounce time
-        current_mode = static_cast<Mode>((current_mode + 1) % 4); // Cycle through modes
-        display_mode();
-        radio_tune(current_frequency);
-        last_press_time = press_time;
-    }
-}
-
-void handle_split_switch() {
-    static unsigned long last_press_time = 0;
-    unsigned long press_time = millis();
-    
-    if (digitalRead(SPLIT_SWITCH) == LOW && press_time - last_press_time > 200) { // 200ms debounce time
-        split_enabled = !split_enabled; // Toggle split mode
-        if (split_enabled) {
-            // Switch to VFO A for receive and VFO B for transmit
-            vfo_a_frequency = current_frequency;
-            current_frequency = vfo_b_frequency;
-        } else {
-            // Switch back to single VFO mode
-            current_frequency = vfo_a_frequency;
-        }
-        radio_tune(current_frequency);
-        display_vfo_frequencies();
-        last_press_time = press_time;
-    }
-}
-
-void handle_ptt() {
-    ptt_active = (digitalRead(PTT_PIN) == LOW);
-    display_ptt_status();
-}
-
-void handle_rit_switch() {
-    static unsigned long last_press_time = 0;
-    unsigned long press_time = millis();
-    
-    if (digitalRead(RIT_SWITCH) == LOW && press_time - last_press_time > 200) { // 200ms debounce time
-        rit_enabled = !rit_enabled; // Toggle RIT mode
-        display_rit_status();
-        last_press_time = press_time;
-    }
-}
-
-void handle_rit_adjust() {
-    if (rit_enabled) {
-        int adjustment = analogRead(RIT_ADJUST);
-        rit_offset = map(adjustment, 0, 1023, -5000, 5000); // Map to desired range
-        radio_tune(current_frequency);
-        display_rit_status();
-    }
-}
-
-void handle_rit_reset() {
-    static unsigned long last_press_time = 0;
-    unsigned long press_time = millis();
-    
-    if (digitalRead(RIT_RESET_PIN) == LOW && press_time - last_press_time > 200) { // 200ms debounce time
-        reset_rit();
-        last_press_time = press_time;
-    }
-}
-
-void reset_rit() {
-    rit_offset = 0;
-    radio_tune(current_frequency);
-    display_rit_status();
-}
-
-// New function to process microphone input and output to speaker
-void process_audio() {
-    int mic_value = analogRead(MIC_PIN); // Read microphone input
-    int threshold_value = analogRead(SQUELCH_THRESHOLD_PIN); // Read squelch threshold
-    squelch_threshold = map(threshold_value, 0, 1023, 0, 1023); // Map to desired range
-
-    if (mic_value > squelch_threshold) {
-        int speaker_value = map(mic_value, 0, 1023, 0, 255); // Map to PWM range
-        analogWrite(SPEAKER_PIN, speaker_value); // Output to speaker
-    } else {
-        analogWrite(SPEAKER_PIN, 0); // Mute speaker if below squelch threshold
-    }
-}
-
-// Functions to change step size
-void increase_step_size() {
-    if (current_step_index < 4) {
-        current_step_index++;
-    }
-}
-
-void decrease_step_size() {
-    if (current_step_index > 0) {
-        current_step_index--;
-    }
+// Audio handling function
+void handle_audio() {
+    handle_squelch(); // Integrate squelch control
 }
 
 void setup() {
     Serial.begin(115200);
     delay(1000);
 
+    // Pin Setup
     pinMode(ENC_SWITCH, INPUT_PULLUP);
     pinMode(ENC_A, INPUT_PULLUP);
     pinMode(ENC_B, INPUT_PULLUP);
-    pinMode(VFO_SWITCH, INPUT_PULLUP);
-    pinMode(MEM_SAVE, INPUT_PULLUP);
-    pinMode(MEM_SELECT, INPUT_PULLUP);
-    pinMode(MEM_SCAN, INPUT_PULLUP);
-    pinMode(S_METER_PIN, INPUT);
-    pinMode(CW_PIN, INPUT_PULLUP); // Setup CW pin as input
-    pinMode(SPLIT_SWITCH, INPUT_PULLUP); // Setup split switch as input
-    pinMode(PTT_PIN, INPUT_PULLUP); // Setup PTT pin as input
-    pinMode(RIT_SWITCH, INPUT_PULLUP); // Setup RIT switch as input
-    pinMode(RIT_ADJUST, INPUT); // Setup RIT adjust as input
-    pinMode(RIT_RESET_PIN, INPUT_PULLUP); // Setup RIT reset pin as input
+    pinMode(BUTTON_PIN, INPUT_PULLUP);
+    pinMode(ENC_RIT_A, INPUT_PULLUP);
+    pinMode(ENC_RIT_B, INPUT_PULLUP);
+    pinMode(RIT_BUTTON_PIN, INPUT_PULLUP);
+    pinMode(STEP_BUTTON_PIN, INPUT_PULLUP);
+    pinMode(ENC_MEM_A, INPUT_PULLUP);
+    pinMode(ENC_MEM_B, INPUT_PULLUP);
+    pinMode(MEM_BUTTON_PIN, INPUT_PULLUP);
 
-    // Setup microphone and speaker pins
-    pinMode(MIC_PIN, INPUT);
-    pinMode(SPEAKER_PIN, OUTPUT);
-    pinMode(SQUELCH_THRESHOLD_PIN, INPUT);
-
-    attachInterrupt(digitalPinToInterrupt(ENC_A), encoder_isr, CHANGE);
-    attachInterrupt(digitalPinToInterrupt(ENC_B), encoder_isr, CHANGE);
-
+    // Initialize display and SI570
     display_init();
     si570_init();
+
+    // Audio setup
+    setup_audio();
+
+    // Interrupts
+    attachInterrupt(digitalPinToInterrupt(ENC_A), encoder_isr, CHANGE);
+    attachInterrupt(digitalPinToInterrupt(ENC_B), encoder_isr, CHANGE);
+    attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), switch_vfo, FALLING);
+    attachInterrupt(digitalPinToInterrupt(ENC_RIT_A), rit_encoder_isr, CHANGE);
+    attachInterrupt(digitalPinToInterrupt(ENC_RIT_B), rit_encoder_isr, CHANGE);
+    attachInterrupt(digitalPinToInterrupt(RIT_BUTTON_PIN), toggle_rit, FALLING);
+    attachInterrupt(digitalPinToInterrupt(STEP_BUTTON_PIN), change_step, FALLING);
+    attachInterrupt(digitalPinToInterrupt(ENC_MEM_A), mem_encoder_isr, CHANGE);
+    attachInterrupt(digitalPinToInterrupt(ENC_MEM_B), mem_encoder_isr, CHANGE);
+    attachInterrupt(digitalPinToInterrupt(MEM_BUTTON_PIN), memory_button_isr, FALLING);
+
+    radio_tune(*current_frequency);
+    pinMode(LED_BUILTIN, OUTPUT);
 }
 
 void loop() {
-    handle_vfo_switch();
-    handle_memory_save();
-    handle_memory_select();
-    handle_memory_scan();
-    handle_mode_switch();
-    handle_split_switch();
-    handle_ptt();
-    handle_rit_switch();
-    handle_rit_adjust();
-    handle_rit_reset(); // Handle RIT reset
-
-    // Add step size handling
-    if (digitalRead(STEP_INCREASE_PIN) == LOW) {
-        increase_step_size();
-    }
-    if (digitalRead(STEP_DECREASE_PIN) == LOW) {
-        decrease_step_size();
+    if (do_tuning() || (rit_enabled && rit_enc_movement != 0)) {
+        update_rit();
+        int32_t display_frequency = *current_frequency + (rit_enabled ? rit_offset * 1000 : 0);
+        radio_tune(display_frequency);
+        char buff[100];
+        sprintf(buff, "VFO %c: %d RIT: %.1f", vfo_a_active ? 'A' : 'B', display_frequency, rit_offset);
+        print_line1(buff);
     }
 
-    display_s_meter();
-    display_vfo_frequencies();
-    display_rit_status();
-    display_ptt_status();
-    display_squelch_status(); // Display the squelch threshold
+    if (mem_enc_movement != 0) {
+        current_memory_index += mem_enc_movement;
+        mem_enc_movement = 0;
 
-    do_tuning();
+        if (current_memory_index < 0) current_memory_index = 0;
+        if (current_memory_index >= MEMORY_SLOTS) current_memory_index = MEMORY_SLOTS - 1;
 
-    // Process audio input and output
-    process_audio();
-}
+        char buff[50];
+        sprintf(buff, "Memory Select: %d", current_memory_index);
+        print_line1(buff);
+    }
 
-void increase_rit() {
-    rit_offset += 100; // Adjust step size as needed
-    radio_tune(current_frequency);
-    display_rit_status();
-}
-
-void decrease_rit() {
-    rit_offset -= 100; // Adjust step size as needed
-    radio_tune(current_frequency);
-    display_rit_status();
+    // Handle audio input and output
+    handle_audio();
 }
