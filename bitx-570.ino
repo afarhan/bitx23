@@ -4,11 +4,15 @@
 #define ENC_A (8)
 #define ENC_B (7)
 #define ENC_SWITCH (6)
+
 #define BUTTON_PIN (9) // Button for switching VFO A/B
+
 #define ENC_RIT_A (10) // RIT encoder A pin
 #define ENC_RIT_B (11) // RIT encoder B pin
 #define RIT_BUTTON_PIN (12) // RIT enable/disable button
+
 #define STEP_BUTTON_PIN (13) // Button for changing frequency step
+
 #define ENC_MEM_A (2) // Encoder A pin for memory selection
 #define ENC_MEM_B (3) // Encoder B pin for memory selection
 #define MEM_BUTTON_PIN (4) // Button to save/recall memory
