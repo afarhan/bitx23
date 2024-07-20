@@ -1,40 +1,34 @@
-/*
-The first time,
-press bootsel while plugging in the pico
-when the drive shows, copy paste the uf2 compiled by Arduin0
-
-from next time, it will program through the com port
-unless the program is crashing, then you have to do the
-bootsel all over again
-*/
-
 #include <Wire.h>
+#include si570.h
 
 // Pin Definitions
 #define ENC_A (8)
 #define ENC_B (7)
 #define ENC_SWITCH (6)
 
-#define BUTTON_PIN (9) // Button for switching VFO A/B
+#define VFO_SWAP_PIN (9) // Button for switching VFO A/B
 
 #define ENC_RIT_A (10) // RIT encoder A pin
 #define ENC_RIT_B (11) // RIT encoder B pin
 #define RIT_BUTTON_PIN (12) // RIT enable/disable button
 
-#define STEP_BUTTON_PIN (13) // Button for changing frequency step
+#define STEP_CHANGE_PIN (13) // Button for changing frequency step
 
 #define ENC_MEM_A (2) // Encoder A pin for memory selection
 #define ENC_MEM_B (3) // Encoder B pin for memory selection
 #define MEM_BUTTON_PIN (4) // Button to save/recall memory
-#define COPY_BUTTON_PIN (15) // Button to copy memory to VFO
+#define MEM_TO_VFO_PIN (15) // Button to copy memory to VFO
 
 #define SPEAKER_PIN (5) // Pin for speaker output
 #define MIC_PIN (6) // Pin for microphone input
 #define SQUELCH_PIN (14) // Pin for squelch control
 
+#define CW_KEY_PIN (16) // Pin for CW key input
+
 // Mode Definitions
 #define MODE_USB 0
 #define MODE_LSB 1
+#define MODE_CW 2
 
 // Constants
 #define MEMORY_SLOTS 20
@@ -65,6 +59,10 @@ int rit_enc_movement = 0;
 const int32_t frequency_steps[] = {1000, 10000, 100000, 1000000, 10000000}; // Frequency steps in Hz
 int current_step_index = 0; // Index to track current frequency step
 
+bool cw_enabled = false;
+int cw_key_pin = CW_KEY_PIN; // Pin for CW key input
+int cw_speed = 20; // CW speed in WPM (Words Per Minute)
+
 // Function Prototypes
 uint8_t enc_state(void);
 uint8_t rit_enc_state(void);
@@ -91,6 +89,9 @@ void setup_audio();
 void handle_audio();
 void handle_squelch();
 int read_squelch();
+void setup_cw();
+void handle_cw();
+void toggle_cw();
 
 // Implement the squelch control functions
 int read_squelch() {
@@ -290,6 +291,29 @@ void handle_audio() {
     handle_squelch(); // Integrate squelch control
 }
 
+void setup_cw() {
+    pinMode(cw_key_pin, INPUT_PULLUP); // Set CW key pin as input with pull-up resistor
+}
+
+void handle_cw() {
+    if (cw_enabled) {
+        bool key_state = !digitalRead(cw_key_pin); // Read CW key pin (inverted logic)
+        if (key_state) {
+            // Transmit CW signal
+            analogWrite(SPEAKER_PIN, 255); // Simulate CW transmission by setting speaker pin high
+        } else {
+            analogWrite(SPEAKER_PIN, 0); // End CW transmission by setting speaker pin low
+        }
+    }
+}
+
+void toggle_cw() {
+    cw_enabled = !cw_enabled;
+    char buff[50];
+    sprintf(buff, "CW Mode: %s", cw_enabled ? "ON" : "OFF");
+    print_line1(buff);
+}
+
 void setup() {
     Serial.begin(115200);
     delay(1000);
@@ -298,15 +322,15 @@ void setup() {
     pinMode(ENC_SWITCH, INPUT_PULLUP);
     pinMode(ENC_A, INPUT_PULLUP);
     pinMode(ENC_B, INPUT_PULLUP);
-    pinMode(BUTTON_PIN, INPUT_PULLUP);
+    pinMode(VFO_SWAP_PIN, INPUT_PULLUP);
     pinMode(ENC_RIT_A, INPUT_PULLUP);
     pinMode(ENC_RIT_B, INPUT_PULLUP);
     pinMode(RIT_BUTTON_PIN, INPUT_PULLUP);
-    pinMode(STEP_BUTTON_PIN, INPUT_PULLUP);
+    pinMode(STEP_CHANGE_PIN, INPUT_PULLUP);
     pinMode(ENC_MEM_A, INPUT_PULLUP);
     pinMode(ENC_MEM_B, INPUT_PULLUP);
     pinMode(MEM_BUTTON_PIN, INPUT_PULLUP);
-    pinMode(COPY_BUTTON_PIN, INPUT_PULLUP); // Initialize copy memory button pin
+    pinMode(MEM_TO_VFO_PIN, INPUT_PULLUP); // Initialize copy memory button pin
 
     // Initialize display and SI570
     display_init();
@@ -315,18 +339,25 @@ void setup() {
     // Audio setup
     setup_audio();
 
+    // CW setup
+    setup_cw();
+
     // Interrupts
     attachInterrupt(digitalPinToInterrupt(ENC_A), encoder_isr, CHANGE);
     attachInterrupt(digitalPinToInterrupt(ENC_B), encoder_isr, CHANGE);
-    attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), switch_vfo, FALLING);
+    attachInterrupt(digitalPinToInterrupt(VFO_SWAP_PIN), switch_vfo, FALLING);
     attachInterrupt(digitalPinToInterrupt(ENC_RIT_A), rit_encoder_isr, CHANGE);
     attachInterrupt(digitalPinToInterrupt(ENC_RIT_B), rit_encoder_isr, CHANGE);
     attachInterrupt(digitalPinToInterrupt(RIT_BUTTON_PIN), toggle_rit, FALLING);
-    attachInterrupt(digitalPinToInterrupt(STEP_BUTTON_PIN), change_step, FALLING);
+    attachInterrupt(digitalPinToInterrupt(STEP_CHANGE_PIN), change_step, FALLING);
     attachInterrupt(digitalPinToInterrupt(ENC_MEM_A), mem_encoder_isr, CHANGE);
     attachInterrupt(digitalPinToInterrupt(ENC_MEM_B), mem_encoder_isr, CHANGE);
     attachInterrupt(digitalPinToInterrupt(MEM_BUTTON_PIN), memory_button_isr, FALLING);
-    attachInterrupt(digitalPinToInterrupt(COPY_BUTTON_PIN), copy_memory_button_isr, FALLING); // Attach ISR for copy memory button
+    attachInterrupt(digitalPinToInterrupt(MEM_TO_VFO_PIN), copy_memory_button_isr, FALLING); // Attach ISR for copy memory button
+
+    // CW mode interrupt
+    pinMode(cw_key_pin, INPUT_PULLUP);
+    attachInterrupt(digitalPinToInterrupt(cw_key_pin), toggle_cw, FALLING);
 
     radio_tune(*current_frequency);
     pinMode(LED_BUILTIN, OUTPUT);
@@ -356,4 +387,7 @@ void loop() {
 
     // Handle audio input and output
     handle_audio();
+
+    // Handle CW transmission
+    handle_cw();
 }
