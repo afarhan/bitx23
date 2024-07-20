@@ -26,6 +26,7 @@ bootsel all over again
 #define ENC_MEM_A (2) // Encoder A pin for memory selection
 #define ENC_MEM_B (3) // Encoder B pin for memory selection
 #define MEM_BUTTON_PIN (4) // Button to save/recall memory
+#define COPY_BUTTON_PIN (15) // Button to copy memory to VFO
 
 #define SPEAKER_PIN (5) // Pin for speaker output
 #define MIC_PIN (6) // Pin for microphone input
@@ -79,6 +80,8 @@ void change_step();
 void memory_button_isr();
 void save_memory();
 void recall_memory();
+void copyMemoryToVFO(); // Prototype for the new function
+void copy_memory_button_isr(); // Prototype for the ISR
 void update_rit();
 void display_init();
 void si570_init();
@@ -253,14 +256,26 @@ void recall_memory() {
     print_line1(buff);
 }
 
-void memory_button_isr() {
-    static bool save_mode = true;
-    if (save_mode) {
-        save_memory();
+void copyMemoryToVFO() {
+    if (current_memory_index < 0 || current_memory_index >= MEMORY_SLOTS) return;
+    int32_t memory_frequency = memories[current_memory_index];
+    
+    if (vfo_a_active) {
+        current_frequency_A = memory_frequency;
+        current_frequency = &current_frequency_A;
     } else {
-        recall_memory();
+        current_frequency_B = memory_frequency;
+        current_frequency = &current_frequency_B;
     }
-    save_mode = !save_mode; // Toggle between save and recall modes
+    radio_tune(*current_frequency);
+    char buff[50];
+    sprintf(buff, "Memory %d Copied to VFO %c: %d", current_memory_index, vfo_a_active ? 'A' : 'B', *current_frequency);
+    print_line1(buff);
+}
+
+// ISR for copy memory to VFO button
+void copy_memory_button_isr() {
+    copyMemoryToVFO();
 }
 
 // Audio setup function
@@ -291,6 +306,7 @@ void setup() {
     pinMode(ENC_MEM_A, INPUT_PULLUP);
     pinMode(ENC_MEM_B, INPUT_PULLUP);
     pinMode(MEM_BUTTON_PIN, INPUT_PULLUP);
+    pinMode(COPY_BUTTON_PIN, INPUT_PULLUP); // Initialize copy memory button pin
 
     // Initialize display and SI570
     display_init();
@@ -310,6 +326,7 @@ void setup() {
     attachInterrupt(digitalPinToInterrupt(ENC_MEM_A), mem_encoder_isr, CHANGE);
     attachInterrupt(digitalPinToInterrupt(ENC_MEM_B), mem_encoder_isr, CHANGE);
     attachInterrupt(digitalPinToInterrupt(MEM_BUTTON_PIN), memory_button_isr, FALLING);
+    attachInterrupt(digitalPinToInterrupt(COPY_BUTTON_PIN), copy_memory_button_isr, FALLING); // Attach ISR for copy memory button
 
     radio_tune(*current_frequency);
     pinMode(LED_BUILTIN, OUTPUT);
