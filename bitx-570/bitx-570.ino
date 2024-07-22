@@ -5,25 +5,20 @@
 #define ENC_A (8)
 #define ENC_B (7)
 #define ENC_SWITCH (6)
-
-#define VFO_SWAP_PIN (9) // Button for switching VFO A/B
-
-#define ENC_RIT_A (10) // RIT encoder A pin
-#define ENC_RIT_B (11) // RIT encoder B pin
-#define RIT_BUTTON_PIN (12) // RIT enable/disable button
-
-#define STEP_CHANGE_PIN (13) // Button for changing frequency step
-
-#define ENC_MEM_A (2) // Encoder A pin for memory selection
-#define ENC_MEM_B (3) // Encoder B pin for memory selection
-#define MEM_BUTTON_PIN (4) // Button to save/recall memory
-#define MEM_TO_VFO_PIN (15) // Button to copy memory to VFO
-
-#define SPEAKER_PIN (5) // Pin for speaker output
-#define MIC_PIN (6) // Pin for microphone input
-#define SQUELCH_PIN (14) // Pin for squelch control
-
-#define CW_KEY_PIN (16) // Pin for CW key input
+#define VFO_SWAP_PIN (9)
+#define ENC_RIT_A (10)
+#define ENC_RIT_B (11)
+#define RIT_BUTTON_PIN (12)
+#define STEP_CHANGE_PIN (13)
+#define ENC_MEM_A (2)
+#define ENC_MEM_B (3)
+#define MEM_BUTTON_PIN (4)
+#define MEM_TO_VFO_PIN (15)
+#define SPEAKER_PIN (5)
+#define MIC_PIN (6)
+#define SQUELCH_PIN (14)
+#define CW_KEY_PIN (16)
+#define RELAY_PIN (17) // Define the relay pin
 
 // Mode Definitions
 #define MODE_USB 0
@@ -32,22 +27,22 @@
 
 // Constants
 #define MEMORY_SLOTS 20
-#define SQUELCH_THRESHOLD 100 // Adjust this value as needed
+#define SQUELCH_THRESHOLD 100
 
 const int32_t if_frequency = 26994100;
 const int32_t BAND_LIMIT_LOW = 144000000;
 const int32_t BAND_LIMIT_HIGH = 144310000;
 
 // Frequency Variables
-int32_t current_frequency_A = 144200000; // VFO A frequency in Hz
-int32_t current_frequency_B = 144250000; // VFO B frequency in Hz
-int32_t* current_frequency = &current_frequency_A; // Pointer to current VFO
+int32_t current_frequency_A = 144200000;
+int32_t current_frequency_B = 144250000;
+int32_t* current_frequency = &current_frequency_A;
 int8_t current_mode = MODE_USB;
-bool vfo_a_active = true; // Track active VFO
+bool vfo_a_active = true;
 
 // Memory Variables
 int32_t memories[MEMORY_SLOTS];
-int current_memory_index = 0; // Index to track the current memory selection
+int current_memory_index = 0;
 
 // Encoder Movement Variables
 int enc_movement = 0;
@@ -56,12 +51,12 @@ bool rit_enabled = false;
 float rit_offset = 0.0;
 int rit_enc_movement = 0;
 
-const int32_t frequency_steps[] = {1000, 10000, 100000, 1000000, 10000000}; // Frequency steps in Hz
-int current_step_index = 0; // Index to track current frequency step
+const int32_t frequency_steps[] = {1000, 10000, 100000, 1000000, 10000000};
+int current_step_index = 0;
 
 bool cw_enabled = false;
-int cw_key_pin = CW_KEY_PIN; // Pin for CW key input
-int cw_speed = 20; // CW speed in WPM (Words Per Minute)
+int cw_key_pin = CW_KEY_PIN;
+int cw_speed = 20;
 
 // Function Prototypes
 uint8_t enc_state(void);
@@ -78,8 +73,8 @@ void change_step();
 void memory_button_isr();
 void save_memory();
 void recall_memory();
-void copyMemoryToVFO(); // Prototype for the new function
-void copy_memory_button_isr(); // Prototype for the ISR
+void copyMemoryToVFO();
+void copy_memory_button_isr();
 void update_rit();
 void display_init();
 void si570_init();
@@ -92,6 +87,7 @@ int read_squelch();
 void setup_cw();
 void handle_cw();
 void toggle_cw();
+void control_relay(bool state); // New function prototype
 
 // Implement the squelch control functions
 int read_squelch() {
@@ -101,10 +97,8 @@ int read_squelch() {
 void handle_squelch() {
     int squelch_level = read_squelch();
     if (squelch_level > SQUELCH_THRESHOLD) {
-        // Mute the audio output if squelch level is above the threshold
         analogWrite(SPEAKER_PIN, 0);
     } else {
-        // Pass through the audio signal if squelch level is below the threshold
         int audio_signal = analogRead(MIC_PIN);
         analogWrite(SPEAKER_PIN, audio_signal);
     }
@@ -180,7 +174,7 @@ void radio_tune(int32_t frequency) {
     } else {
         lo = frequency + if_frequency;
     }
-    si570_tune(lo); // Assuming si570_tune is defined elsewhere
+    si570_tune(lo);
 }
 
 int32_t do_tuning() {
@@ -188,7 +182,6 @@ int32_t do_tuning() {
     *current_frequency += frequency_steps[current_step_index] * enc_movement;
     enc_movement = 0;
 
-    // Ensure the frequency stays within the 2M band limits
     if (*current_frequency < BAND_LIMIT_LOW) {
         *current_frequency = BAND_LIMIT_LOW;
     } else if (*current_frequency > BAND_LIMIT_HIGH) {
@@ -206,7 +199,6 @@ void update_rit() {
         rit_offset += 0.1 * rit_enc_movement;
         rit_enc_movement = 0;
 
-        // Limit RIT offset between -9.9 and +9.9 kHz
         if (rit_offset < -9.9) rit_offset = -9.9;
         if (rit_offset > 9.9) rit_offset = 9.9;
     }
@@ -223,13 +215,13 @@ void switch_vfo() {
     radio_tune(*current_frequency);
     char buff[100];
     sprintf(buff, "VFO %c: %d", vfo_a_active ? 'A' : 'B', *current_frequency);
-    print_line1(buff); // Assuming print_line1 is defined elsewhere
+    print_line1(buff);
 }
 
 void toggle_rit() {
     rit_enabled = !rit_enabled;
     if (!rit_enabled) {
-        rit_offset = 0.0; // Reset RIT offset when disabled
+        rit_offset = 0.0;
     }
 }
 
@@ -274,35 +266,33 @@ void copyMemoryToVFO() {
     print_line1(buff);
 }
 
-// ISR for copy memory to VFO button
 void copy_memory_button_isr() {
     copyMemoryToVFO();
 }
 
-// Audio setup function
 void setup_audio() {
     pinMode(SPEAKER_PIN, OUTPUT);
     pinMode(MIC_PIN, INPUT);
-    pinMode(SQUELCH_PIN, INPUT); // Initialize squelch pin
+    pinMode(SQUELCH_PIN, INPUT);
 }
 
-// Audio handling function
 void handle_audio() {
-    handle_squelch(); // Integrate squelch control
+    handle_squelch();
 }
 
 void setup_cw() {
-    pinMode(cw_key_pin, INPUT_PULLUP); // Set CW key pin as input with pull-up resistor
+    pinMode(cw_key_pin, INPUT_PULLUP);
 }
 
 void handle_cw() {
     if (cw_enabled) {
-        bool key_state = !digitalRead(cw_key_pin); // Read CW key pin (inverted logic)
+        bool key_state = !digitalRead(cw_key_pin);
         if (key_state) {
-            // Transmit CW signal
-            analogWrite(SPEAKER_PIN, 255); // Simulate CW transmission by setting speaker pin high
+            analogWrite(SPEAKER_PIN, 255);
+            control_relay(true); // Turn relay on during transmission
         } else {
-            analogWrite(SPEAKER_PIN, 0); // End CW transmission by setting speaker pin low
+            analogWrite(SPEAKER_PIN, 0);
+            control_relay(false); // Turn relay off when not transmitting
         }
     }
 }
@@ -314,11 +304,14 @@ void toggle_cw() {
     print_line1(buff);
 }
 
+void control_relay(bool state) {
+    digitalWrite(RELAY_PIN, state ? HIGH : LOW);
+}
+
 void setup() {
     Serial.begin(115200);
     delay(1000);
 
-    // Pin Setup
     pinMode(ENC_SWITCH, INPUT_PULLUP);
     pinMode(ENC_A, INPUT_PULLUP);
     pinMode(ENC_B, INPUT_PULLUP);
@@ -330,19 +323,14 @@ void setup() {
     pinMode(ENC_MEM_A, INPUT_PULLUP);
     pinMode(ENC_MEM_B, INPUT_PULLUP);
     pinMode(MEM_BUTTON_PIN, INPUT_PULLUP);
-    pinMode(MEM_TO_VFO_PIN, INPUT_PULLUP); // Initialize copy memory button pin
+    pinMode(MEM_TO_VFO_PIN, INPUT_PULLUP);
+    pinMode(RELAY_PIN, OUTPUT); // Initialize relay pin
 
-    // Initialize display and SI570
     display_init();
     si570_init();
-
-    // Audio setup
     setup_audio();
-
-    // CW setup
     setup_cw();
 
-    // Interrupts
     attachInterrupt(digitalPinToInterrupt(ENC_A), encoder_isr, CHANGE);
     attachInterrupt(digitalPinToInterrupt(ENC_B), encoder_isr, CHANGE);
     attachInterrupt(digitalPinToInterrupt(VFO_SWAP_PIN), switch_vfo, FALLING);
@@ -353,10 +341,7 @@ void setup() {
     attachInterrupt(digitalPinToInterrupt(ENC_MEM_A), mem_encoder_isr, CHANGE);
     attachInterrupt(digitalPinToInterrupt(ENC_MEM_B), mem_encoder_isr, CHANGE);
     attachInterrupt(digitalPinToInterrupt(MEM_BUTTON_PIN), memory_button_isr, FALLING);
-    attachInterrupt(digitalPinToInterrupt(MEM_TO_VFO_PIN), copy_memory_button_isr, FALLING); // Attach ISR for copy memory button
-
-    // CW mode interrupt
-    pinMode(cw_key_pin, INPUT_PULLUP);
+    attachInterrupt(digitalPinToInterrupt(MEM_TO_VFO_PIN), copy_memory_button_isr, FALLING);
     attachInterrupt(digitalPinToInterrupt(cw_key_pin), toggle_cw, FALLING);
 
     radio_tune(*current_frequency);
@@ -385,9 +370,6 @@ void loop() {
         print_line1(buff);
     }
 
-    // Handle audio input and output
     handle_audio();
-
-    // Handle CW transmission
     handle_cw();
 }
